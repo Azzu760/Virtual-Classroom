@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  password  String
+  role      String    // "teacher" or "student"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relationships
+  classroomsCreated Classroom[] @relation("TeacherClassrooms")
+  enrollments       Enrollment[]
+  announcements     Announcement[]
+  assignments       Assignment[]
+  grades            Grade[]
+}
+
+model Classroom {
+  id          String      @id @default(cuid())
+  name        String
+  code        String      @unique
+  subject     String?
+  status      String      @default("active") 
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relationships
+  teacherId   String
+  teacher     User        @relation("TeacherClassrooms", fields: [teacherId], references: [id])
+  enrollments Enrollment[]
+  announcements Announcement[]
+  assignments Assignment[]
+}
+
+model Enrollment {
+  id          String    @id @default(cuid())
+  userId      String
+  classroomId String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relationships
+  user        User      @relation(fields: [userId], references: [id])
+  classroom   Classroom @relation(fields: [classroomId], references: [id])
+
+  @@unique([userId, classroomId])
+}
+
+model Announcement {
+  id          String    @id @default(cuid())
+  title       String
+  content     String
+  datePosted  DateTime  @default(now())
+  classroomId String
+  userId      String
+
+  // Relationships
+  classroom   Classroom @relation(fields: [classroomId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  title       String
+  description String
+  dueDate     DateTime
+  status      String    @default("pending")
+  classroomId String
+  userId      String
+
+  // Relationships
+  classroom   Classroom @relation(fields: [classroomId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
+  grades      Grade[]
+}
+
+model Grade {
+  id          String    @id @default(cuid())
+  score       Float
+  feedback    String?
+  assignmentId String
+  userId      String
+
+  // Relationships
+  assignment  Assignment @relation(fields: [assignmentId], references: [id])
+  user        User       @relation(fields: [userId], references: [id])
+}
