@@ -1,4 +1,5 @@
 const express = require("express");
+const router = express.Router();
 const {
   register,
   login,
@@ -8,17 +9,24 @@ const {
   githubAuthCallback,
 } = require("../controllers/authController");
 
-const router = express.Router();
+// Validation middleware
+const validate = (schema) => (req, res, next) => {
+  try {
+    schema.parse(req.body);
+    next();
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.errors[0].message,
+    });
+  }
+};
 
-// Email/password authentication
+// Routes
 router.post("/register", register);
 router.post("/login", login);
-
-// Google OAuth
 router.get("/google", googleAuth);
 router.get("/google/callback", googleAuthCallback);
-
-// GitHub OAuth
 router.get("/github", githubAuth);
 router.get("/github/callback", githubAuthCallback);
 

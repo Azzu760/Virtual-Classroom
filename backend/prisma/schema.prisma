@@ -21,7 +21,10 @@ model User {
   enrollments       Enrollment[]
   announcements     Announcement[]
   assignments       Assignment[]
+  submissions      Submission[]
   grades            Grade[]
+  materials         Material[]
+  dismissedNotifications DismissedNotification[]
 }
 
 model Classroom {
@@ -39,6 +42,7 @@ model Classroom {
   enrollments Enrollment[]
   announcements Announcement[]
   assignments Assignment[]
+  materials   Material[]
 }
 
 model Enrollment {
@@ -69,28 +73,102 @@ model Announcement {
 }
 
 model Assignment {
-  id          String    @id @default(cuid())
+  id          String     @id @default(cuid())
   title       String
   description String
   dueDate     DateTime
-  status      String    @default("pending")
+  status      String     @default("published")
   classroomId String
   userId      String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  // File storage fields (using BYTEA for direct storage)
+  fileData    Bytes?     // Actual binary file content
+  fileName    String?
+  fileType    String?    // MIME type
+  fileSize    Int?       // Size in bytes
+
+  // Relationships
+  classroom   Classroom  @relation(fields: [classroomId], references: [id])
+  user        User       @relation(fields: [userId], references: [id])
+  submissions Submission[]
+  grades      Grade[]
+}
+
+enum SubmissionStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  LATE
+  GRADED
+}
+
+model Submission {
+  id           String           @id @default(cuid())
+  assignmentId String
+  userId       String
+  
+  // File storage fields
+  fileData     Bytes     
+  fileName     String
+  fileType     String
+  fileSize     Int
+  
+  // Status field
+  status       SubmissionStatus @default(NOT_SUBMITTED)
+  
+  // Timestamps
+  submittedAt  DateTime?
+  grade        Float?
+  feedback     String?
+  gradedAt     DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  // Relationships
+  assignment   Assignment       @relation(fields: [assignmentId], references: [id])
+  user         User             @relation(fields: [userId], references: [id])
+}
+
+model Grade {
+  id           String    @id @default(cuid())
+  score        Float
+  feedback     String?
+  assignmentId String
+  userId       String
+
+  // Relationships
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
+}
+
+model Material {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  type        String    // "file" or "link"
+  url         String?
+  fileName    String?
+  fileType    String?
+  fileSize    Int?
+  fileData    Bytes?
+  classroomId String
+  userId      String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   // Relationships
   classroom   Classroom @relation(fields: [classroomId], references: [id])
   user        User      @relation(fields: [userId], references: [id])
-  grades      Grade[]
 }
 
-model Grade {
-  id          String    @id @default(cuid())
-  score       Float
-  feedback    String?
-  assignmentId String
-  userId      String
+model DismissedNotification {
+  id             String   @id @default(cuid())
+  userId         String
+  notificationId String
+  notificationType String // 'grade', 'announcement', 'assignment', 'material'
+  dismissedAt    DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id])
 
-  // Relationships
-  assignment  Assignment @relation(fields: [assignmentId], references: [id])
-  user        User       @relation(fields: [userId], references: [id])
+  @@unique([userId, notificationId, notificationType])
 }

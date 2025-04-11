@@ -1,20 +1,30 @@
 const jwt = require("jsonwebtoken");
+const { PrismaClient } = require("@prisma/client");
+const prisma = new PrismaClient();
 
-module.exports = (req, res, next) => {
-  // Get token from header
-  const token = req.header("Authorization")?.replace("Bearer ", "");
-
-  if (!token) {
-    return res.status(401).json({ error: "Access denied. No token provided." });
-  }
-
+module.exports = async (req, res, next) => {
   try {
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret");
-    req.user = decoded; // Attach user data to request object
+    const token = req.header("Authorization")?.split(" ")[1];
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Minimal but crucial security check
+    const userExists = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: { id: true },
+    });
+    if (!userExists) return res.status(401).json({ error: "Unauthorized" });
+
+    // Only attach necessary user data
+    req.user = { id: decoded.userId };
     next();
   } catch (error) {
-    console.error("Token verification error:", error);
-    res.status(400).json({ error: "Invalid token" });
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Token expired" });
+    }
+    return res.status(401).json({ error: "Invalid token" });
+  } finally {
+    await prisma.$disconnect();
   }
 };

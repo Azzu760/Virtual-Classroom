@@ -103,32 +103,6 @@ const getClassroomAnnouncements = async (req, res) => {
   }
 };
 
-// Fetch assignments for a classroom
-const getClassroomAssignments = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const assignments = await prisma.assignment.findMany({
-      where: { classroomId: id },
-    });
-
-    const formattedAssignments = assignments.map((assignment) => ({
-      id: assignment.id,
-      title: assignment.title,
-      description: assignment.description,
-      dueDate: assignment.dueDate.toISOString(),
-      status: assignment.status,
-      classroomId: assignment.classroomId,
-      userId: assignment.userId,
-    }));
-
-    res.json(formattedAssignments);
-  } catch (error) {
-    console.error("Failed to fetch assignments:", error);
-    res.status(500).json({ error: "Failed to fetch assignments" });
-  }
-};
-
 // Fetch classrooms created by a specific teacher
 const getClassroomsByTeacherId = async (req, res) => {
   const { teacherId } = req.params;
@@ -263,49 +237,6 @@ const createAnnouncement = async (req, res) => {
   } catch (error) {
     console.error("Failed to create announcement:", error);
     res.status(500).json({ error: "Failed to create announcement" });
-  }
-};
-
-// Create a new assignment
-const createAssignment = async (req, res) => {
-  const { classroomId, title, description, dueDate, userId } = req.body;
-
-  try {
-    const newAssignment = await prisma.assignment.create({
-      data: {
-        title,
-        description,
-        dueDate: new Date(dueDate),
-        classroomId,
-        userId,
-      },
-    });
-
-    res.status(201).json(newAssignment);
-  } catch (error) {
-    console.error("Failed to create assignment:", error);
-    res.status(500).json({ error: "Failed to create assignment" });
-  }
-};
-
-// Assign a grade to a student for an assignment
-const assignGrade = async (req, res) => {
-  const { assignmentId, userId, score, feedback } = req.body;
-
-  try {
-    const newGrade = await prisma.grade.create({
-      data: {
-        score,
-        feedback,
-        assignmentId,
-        userId,
-      },
-    });
-
-    res.status(201).json(newGrade);
-  } catch (error) {
-    console.error("Failed to assign grade:", error);
-    res.status(500).json({ error: "Failed to assign grade" });
   }
 };
 
@@ -461,18 +392,138 @@ const getEnrolledClassroomByUserId = async (req, res) => {
   }
 };
 
+const getUpcomingDeadlineAssignments = async (req, res) => {
+  const { classroomId } = req.params;
+  try {
+    const assignments = await prisma.assignment.findMany({
+      where: {
+        classroomId: classroomId,
+        dueDate: {
+          gte: new Date(),
+        },
+      },
+      select: {
+        title: true,
+        dueDate: true,
+      },
+      orderBy: {
+        dueDate: "asc",
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      data: assignments,
+    });
+  } catch (error) {
+    console.error("Error fetching upcoming deadline assignments:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch upcoming assignments",
+      error: error.message,
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+};
+
+const getUpcomingAssignmentsByUserId = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // First check if user is a teacher
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    let assignments;
+
+    if (user.role === "teacher") {
+      // Get assignments created by the teacher
+      assignments = await prisma.assignment.findMany({
+        where: { userId },
+        select: {
+          title: true,
+          dueDate: true,
+          classroom: {
+            select: {
+              name: true,
+            },
+          },
+        },
+        orderBy: {
+          dueDate: "asc",
+        },
+      });
+    } else {
+      // Get assignments from classrooms where student is enrolled
+      assignments = await prisma.assignment.findMany({
+        where: {
+          classroom: {
+            enrollments: {
+              some: {
+                userId,
+              },
+            },
+          },
+        },
+        select: {
+          title: true,
+          dueDate: true,
+          classroom: {
+            select: {
+              name: true,
+            },
+          },
+        },
+        orderBy: {
+          dueDate: "asc",
+        },
+      });
+    }
+
+    // Transform the data to match the requested format
+    const formattedAssignments = assignments.map((assignment) => ({
+      classroomName: assignment.classroom.name,
+      assignmentTitle: assignment.title,
+      dueDate: assignment.dueDate,
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedAssignments,
+    });
+  } catch (error) {
+    console.error("Error fetching assignments:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch assignments",
+      error: error.message,
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+};
+
 module.exports = {
   getClassrooms,
   getClassroomById,
   getClassroomAnnouncements,
-  getClassroomAssignments,
   getClassroomsByTeacherId,
   getEnrolledClassroomByUserId,
   getStudentsByClassroomId,
   createClassroom,
   createAnnouncement,
-  createAssignment,
-  assignGrade,
   joinClassroom,
   archiveClassroom,
+  getUpcomingDeadlineAssignments,
+  getUpcomingAssignmentsByUserId,
 };

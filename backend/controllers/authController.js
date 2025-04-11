@@ -1,68 +1,79 @@
+require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const axios = require("axios");
-const querystring = require("querystring");
 const { z } = require("zod");
 
-// Register a new user
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const JWT_SECRET = process.env.JWT_SECRET;
+const GOOGLE_REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/google/callback`;
+const GITHUB_REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/github/callback`;
+
+// Enhanced validation schemas
 const registerSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email("Invalid email format"),
+  name: z.string().min(1, "Name is required").max(50),
+  email: z.string().email("Invalid email format").max(100),
   password: z
     .string()
-    .min(8, "Password must be at least 8 characters long")
-    .regex(
-      /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
-      "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
-    ),
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Requires at least one uppercase letter")
+    .regex(/[a-z]/, "Requires at least one lowercase letter")
+    .regex(/\d/, "Requires at least one number")
+    .regex(/[\W_]/, "Requires at least one special character"),
   role: z.enum(["student", "teacher", "parent"]),
 });
 
+const loginSchema = z.object({
+  email: z.string().email("Invalid email format"),
+  password: z.string().min(1, "Password is required"),
+});
+
+// Unified response handler
+const handleResponse = (res, status, success, data, error) => {
+  const response = { success, ...data };
+  if (error) response.error = error;
+  return res.status(status).json(response);
+};
+
 exports.register = async (req, res) => {
   try {
-    // Validate the request body using Zod
-    const validationResult = registerSchema.safeParse(req.body);
-
-    // If validation fails, return the error
-    if (!validationResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: validationResult.error.errors[0].message,
-      });
+    const validation = registerSchema.safeParse(req.body);
+    if (!validation.success) {
+      return handleResponse(
+        res,
+        400,
+        false,
+        null,
+        validation.error.errors[0].message
+      );
     }
 
-    const { name, email, password, role } = validationResult.data;
-
-    // Check if the user already exists
+    const { name, email, password, role } = validation.data;
     const existingUser = await prisma.user.findUnique({ where: { email } });
+
     if (existingUser) {
-      return res
-        .status(400)
-        .json({ success: false, error: "User already exists" });
+      return handleResponse(res, 409, false, null, "User already exists");
     }
 
-    // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create the user in the database
     const user = await prisma.user.create({
-      data: { name, email, password: hashedPassword, role },
+      data: {
+        name,
+        email,
+        role,
+        password: await bcrypt.hash(password, 12),
+      },
     });
 
-    // Generate a JWT token
-    const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "secret",
-      { expiresIn: "1h" }
-    );
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
+      expiresIn: "1h",
+      algorithm: "HS256",
+    });
 
-    // Return success response
-    res.status(201).json({
-      success: true,
-      message: "User registered successfully",
+    handleResponse(res, 201, true, {
+      message: "Registration successful",
       user: {
         id: user.id,
         name: user.name,
@@ -73,55 +84,36 @@ exports.register = async (req, res) => {
     });
   } catch (error) {
     console.error("Registration error:", error);
-    res.status(500).json({ success: false, error: "Registration failed" });
+    handleResponse(res, 500, false, null, "Registration failed");
   }
 };
 
-// Login with email and password
-const loginSchema = z.object({
-  email: z.string().email("Invalid email format"),
-  password: z.string().min(1, "Password is required"),
-});
-
 exports.login = async (req, res) => {
   try {
-    // Validate the request body using Zod
-    const validationResult = loginSchema.safeParse(req.body);
-
-    // If validation fails, return the error
-    if (!validationResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: validationResult.error.errors[0].message,
-      });
+    const validation = loginSchema.safeParse(req.body);
+    if (!validation.success) {
+      return handleResponse(
+        res,
+        400,
+        false,
+        null,
+        validation.error.errors[0].message
+      );
     }
 
-    const { email, password } = validationResult.data;
-
-    // Find the user by email
+    const { email, password } = validation.data;
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      return res.status(400).json({ success: false, error: "User not found" });
+
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return handleResponse(res, 401, false, null, "Invalid credentials");
     }
 
-    // Compare the provided password with the hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid credentials" });
-    }
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
+      expiresIn: "1h",
+      algorithm: "HS256",
+    });
 
-    // Generate a JWT token
-    const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "secret",
-      { expiresIn: "1h" }
-    );
-
-    // Return success response
-    res.status(200).json({
-      success: true,
+    handleResponse(res, 200, true, {
       message: "Login successful",
       user: {
         id: user.id,
@@ -133,204 +125,143 @@ exports.login = async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({ success: false, error: "Login failed" });
+    handleResponse(res, 500, false, null, "Login failed");
   }
 };
 
-// Redirect to Google OAuth page
+// Google OAuth
 exports.googleAuth = (req, res) => {
-  try {
-    const params = querystring.stringify({
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      redirect_uri: process.env.GOOGLE_REDIRECT_URI,
-      response_type: "code",
-      scope: "profile email",
-      access_type: "offline",
-      prompt: "consent", // Ensures user is always asked for permission
-    });
-
-    const googleAuthURL = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-    res.redirect(googleAuthURL);
-  } catch (error) {
-    console.error("Google OAuth redirect error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to initiate Google OAuth" });
-  }
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: "profile email",
+    access_type: "offline",
+    prompt: "consent",
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 };
 
-// Handle Google OAuth callback
 exports.googleAuthCallback = async (req, res) => {
-  const { code } = req.query;
-
-  if (!code) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Authorization code missing" });
-  }
-
   try {
-    // Exchange the authorization code for access & refresh tokens
-    const tokenResponse = await axios.request({
-      method: "POST",
-      url: "https://oauth2.googleapis.com/token",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      data: new URLSearchParams({
+    const { code } = req.query;
+    if (!code) throw new Error("Missing authorization code");
+
+    const { data: tokens } = await axios.post(
+      "https://oauth2.googleapis.com/token",
+      {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+        redirect_uri: GOOGLE_REDIRECT_URI,
         grant_type: "authorization_code",
-      }).toString(),
-    });
-
-    const { access_token } = tokenResponse.data;
-
-    // Fetch user profile data from Google
-    const { data: userData } = await axios.get(
-      "https://www.googleapis.com/oauth2/v1/userinfo",
-      {
-        headers: { Authorization: `Bearer ${access_token}` },
       }
     );
 
-    // Check if user exists in the database
+    const { data: profile } = await axios.get(
+      "https://www.googleapis.com/oauth2/v1/userinfo",
+      {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      }
+    );
+
     let user = await prisma.user.findUnique({
-      where: { email: userData.email },
+      where: { email: profile.email },
     });
 
     if (!user) {
       user = await prisma.user.create({
         data: {
-          name: userData.name,
-          email: userData.email,
+          name: profile.name,
+          email: profile.email,
           role: "student",
           password: await bcrypt.hash(
             crypto.randomBytes(32).toString("hex"),
-            10 // Secure hashed random password
+            12
           ),
+          provider: "google",
+          providerId: profile.id,
         },
       });
     }
 
-    // Generate a JWT token for authentication
-    const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "secret",
-      { expiresIn: "1h" }
-    );
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
+      expiresIn: "1h",
+      algorithm: "HS256",
+    });
 
-    // Redirect user to frontend with JWT token
-    res.redirect(`http://localhost:3000?token=${token}`);
+    res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
   } catch (error) {
-    console.error(
-      "Google OAuth callback error:",
-      error.response?.data || error
-    );
-    res
-      .status(500)
-      .json({ success: false, error: "Google authentication failed" });
+    console.error("Google OAuth error:", error.response?.data || error);
+    res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
   }
 };
 
-// Redirect to GitHub OAuth page
+// GitHub OAuth
 exports.githubAuth = (req, res) => {
-  try {
-    const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${process.env.GITHUB_REDIRECT_URI}&scope=user:email`;
-    res.redirect(githubAuthUrl);
-  } catch (error) {
-    console.error("GitHub OAuth redirect error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to initiate GitHub OAuth" });
-  }
+  const params = new URLSearchParams({
+    client_id: process.env.GITHUB_CLIENT_ID,
+    redirect_uri: GITHUB_REDIRECT_URI,
+    scope: "user:email",
+  });
+  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
 };
 
-// Handle GitHub OAuth callback
 exports.githubAuthCallback = async (req, res) => {
-  const { code } = req.query;
-
-  if (!code) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Authorization code missing" });
-  }
-
   try {
-    // Exchange the code for an access token
-    const { data } = await axios.post(
+    const { code } = req.query;
+    if (!code) throw new Error("Missing authorization code");
+
+    const { data: tokens } = await axios.post(
       "https://github.com/login/oauth/access_token",
       {
         code,
         client_id: process.env.GITHUB_CLIENT_ID,
         client_secret: process.env.GITHUB_CLIENT_SECRET,
-        redirect_uri: process.env.GITHUB_REDIRECT_URI,
       },
-      {
-        headers: { Accept: "application/json" },
-      }
+      { headers: { Accept: "application/json" } }
     );
 
-    // Fetch user data from GitHub
-    const { data: userData } = await axios.get("https://api.github.com/user", {
-      headers: { Authorization: `Bearer ${data.access_token}` },
+    const { data: profile } = await axios.get("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
 
-    // Fetch user's email (GitHub API requires an additional request)
     const { data: emails } = await axios.get(
       "https://api.github.com/user/emails",
       {
-        headers: { Authorization: `Bearer ${data.access_token}` },
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
       }
     );
 
-    // Find the primary email (GitHub sometimes hides emails)
-    const primaryEmail = emails.find(
-      (email) => email.primary && email.verified
-    )?.email;
+    const primaryEmail = emails.find((e) => e.primary && e.verified)?.email;
+    if (!primaryEmail) throw new Error("No verified email found");
 
-    if (!primaryEmail) {
-      return res.status(400).json({
-        success: false,
-        error: "Email not found. Please ensure your GitHub email is public.",
-      });
-    }
-
-    // Check if the user already exists in the database
-    let user = await prisma.user.findUnique({
-      where: { email: primaryEmail },
-    });
+    let user = await prisma.user.findUnique({ where: { email: primaryEmail } });
 
     if (!user) {
-      // Create a new user if they don't exist
       user = await prisma.user.create({
         data: {
-          name: userData.name || userData.login, // Use GitHub username if name is not available
+          name: profile.name || profile.login,
           email: primaryEmail,
-          role: "student", // Default role
+          role: "student",
           password: await bcrypt.hash(
             crypto.randomBytes(32).toString("hex"),
-            10
-          ), // Secure hashed random password
+            12
+          ),
+          provider: "github",
+          providerId: profile.id.toString(),
         },
       });
     }
 
-    // Generate a JWT token
-    const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "secret",
-      {
-        expiresIn: "1h",
-      }
-    );
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
+      expiresIn: "1h",
+      algorithm: "HS256",
+    });
 
-    // Redirect the user back to the frontend with the token
-    res.redirect(`http://localhost:3000?token=${token}`);
+    res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
   } catch (error) {
-    console.error("GitHub OAuth callback error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "GitHub authentication failed" });
+    console.error("GitHub OAuth error:", error.response?.data || error);
+    res.redirect(`${FRONTEND_URL}/login?error=github_auth_failed`);
   }
 };
